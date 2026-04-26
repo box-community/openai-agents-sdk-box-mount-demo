@@ -1,0 +1,23 @@
+[project]
+name = "box-sandbox-cli"
+version = "0.1.0"
+description = "Interactive CLI for a Docker-backed OpenAI SandboxAgent with a Box mount."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai-agents[docker]",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+box-sandbox-cli = "box_sandbox_cli.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

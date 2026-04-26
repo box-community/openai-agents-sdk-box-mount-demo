@@ -1,0 +1,2 @@
+[console_scripts]
+box-sandbox-cli = box_sandbox_cli.cli:main

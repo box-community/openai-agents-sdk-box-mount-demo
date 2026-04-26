@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/box_sandbox_cli/__init__.py
+src/box_sandbox_cli/cli.py
+src/box_sandbox_cli.egg-info/PKG-INFO
+src/box_sandbox_cli.egg-info/SOURCES.txt
+src/box_sandbox_cli.egg-info/dependency_links.txt
+src/box_sandbox_cli.egg-info/entry_points.txt
+src/box_sandbox_cli.egg-info/requires.txt
+src/box_sandbox_cli.egg-info/top_level.txt
