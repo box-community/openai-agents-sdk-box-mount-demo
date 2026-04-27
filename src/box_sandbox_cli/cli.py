@@ -531,6 +531,70 @@ def _format_event_source(entry: dict[str, Any]) -> str:
     return ": ".join(parts) if parts else "-"
 
 
+def _markdown_cell(value: str | None) -> str:
+    if not value:
+        return "-"
+    return value.replace("|", "\\|").replace("\n", " ").strip() or "-"
+
+
+def _event_phrase(event_type: str | None) -> str:
+    if not event_type:
+        return "performed an event"
+
+    phrases = {
+        "COLLABORATION_INVITE": "invited a collaborator",
+        "COLLABORATION_ACCEPT": "accepted a collaboration",
+        "COLLABORATION_REMOVE": "removed a collaboration",
+        "COLLABORATION_ROLE_CHANGE": "changed a collaboration role",
+        "COMMENT_CREATE": "added a comment",
+        "COMMENT_DELETE": "deleted a comment",
+        "COPY": "copied an item",
+        "DELETE": "deleted an item",
+        "DOWNLOAD": "downloaded an item",
+        "EDIT": "edited an item",
+        "LOCK": "locked an item",
+        "MOVE": "moved an item",
+        "PREVIEW": "previewed an item",
+        "RENAME": "renamed an item",
+        "SHARE": "shared an item",
+        "TASK_ASSIGNMENT_CREATE": "created a task assignment",
+        "TASK_ASSIGNMENT_DELETE": "deleted a task assignment",
+        "TASK_ASSIGNMENT_UPDATE": "updated a task assignment",
+        "TASK_CREATE": "created a task",
+        "TASK_UPDATE": "updated a task",
+        "UNDELETE": "restored an item",
+        "UNLOCK": "unlocked an item",
+        "UNSHARE": "removed a share",
+        "UPLOAD": "uploaded an item",
+    }
+    if event_type in phrases:
+        return phrases[event_type]
+    return event_type.replace("_", " ").lower()
+
+
+def _format_event_description(entry: dict[str, Any]) -> str:
+    actor = _format_event_actor(entry)
+    source = entry.get("source")
+    source_name = None
+    source_type = None
+    if isinstance(source, dict):
+        raw_name = source.get("name")
+        raw_type = source.get("type")
+        if isinstance(raw_name, str) and raw_name:
+            source_name = raw_name
+        if isinstance(raw_type, str) and raw_type:
+            source_type = raw_type.lower()
+
+    subject = actor if actor != "-" else "Someone"
+    phrase = _event_phrase(entry.get("event_type"))
+
+    if source_name and source_type:
+        return f"{subject} {phrase} on {source_type} '{source_name}'."
+    if source_name:
+        return f"{subject} {phrase} on '{source_name}'."
+    return f"{subject} {phrase}."
+
+
 def _get_json(url: str, *, access_token: str) -> dict[str, Any]:
     request = Request(
         url,
@@ -601,18 +665,19 @@ def _print_events(settings: Settings) -> None:
         print("No events found.")
         return
 
+    print("| created_at | event_type | actor | source | description | event_id |")
+    print("| --- | --- | --- | --- | --- | --- |")
     for entry in events:
-        created_at = _format_box_time(entry.get("created_at"))
-        event_type = entry.get("event_type")
-        event_id = entry.get("event_id")
-        actor = _format_event_actor(entry)
-        source = _format_event_source(entry)
-        print(f"{created_at}  {event_type or '-'}")
-        print(f"  actor:  {actor}")
-        print(f"  source: {source}")
-        if isinstance(event_id, str) and event_id:
-            print(f"  id:     {event_id}")
-        print()
+        created_at = _markdown_cell(_format_box_time(entry.get("created_at")))
+        event_type = _markdown_cell(entry.get("event_type"))
+        actor = _markdown_cell(_format_event_actor(entry))
+        source = _markdown_cell(_format_event_source(entry))
+        description = _markdown_cell(_format_event_description(entry))
+        event_id = _markdown_cell(entry.get("event_id"))
+        print(
+            f"| {created_at} | {event_type} | {actor} | {source} | "
+            f"{description} | {event_id} |"
+        )
 
 
 def run_events_command() -> None:
