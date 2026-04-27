@@ -5,6 +5,8 @@ Summary: Interactive CLI for a Docker-backed OpenAI SandboxAgent with a Box moun
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: openai-agents[docker]
+Requires-Dist: PyJWT[crypto]>=2.8.0
+Requires-Dist: prompt_toolkit>=3.0.47
 Requires-Dist: python-dotenv>=1.0.1
 
 # Box Sandbox CLI
@@ -14,6 +16,8 @@ Simple interactive Python CLI built on [`openai-agents`](https://pypi.org/projec
 - starts a Docker-backed `SandboxAgent`
 - mounts a Box folder read/write with `BoxMount`
 - keeps the same live sandbox session across multiple CLI prompts
+- uses `Prompt Toolkit` for the interactive prompt
+- streams assistant responses live as the `SandboxAgent` generates them
 
 ## What it expects
 
@@ -38,7 +42,9 @@ BOX_ACCESS_TOKEN=
 BOX_TOKEN=
 BOX_IMPERSONATE=
 BOX_OWNED_BY=
+BOX_PLUGIN_CONFIG_DIR=/var/lib/docker-plugins/rclone/config
 BOX_MOUNT_DIR=box
+BOX_PROMPT_HISTORY=.box-sandbox-cli/prompt_history.txt
 BOX_SESSION_ID=box-sandbox-cli
 BOX_SESSION_DB=.box-sandbox-cli/session.sqlite3
 ```
@@ -67,5 +73,9 @@ python -m box_sandbox_cli.cli
 
 - The Box mount is created with `BoxMount(..., read_only=False)` so the agent can write back to Box.
 - This CLI uses `DockerVolumeMountStrategy(driver="rclone")`, which means Docker needs to be running and the `rclone` Docker volume plugin must be available on the machine.
-- The CLI reads `BOX_CONFIG_FILE`, inlines its JSON into `config_credentials`, and passes that to `BoxMount`. That avoids relying on the Docker volume plugin being able to see an arbitrary host path.
-- The current SDK docs note that non-interactive Box mounts may require a minted `token` or `access_token`. The CLI accepts optional `BOX_TOKEN` and `BOX_ACCESS_TOKEN` overrides for that reason.
+- The CLI stages `BOX_CONFIG_FILE` into the Docker plugin config directory and passes that staged file to `BoxMount` as `box_config_file`.
+- The CLI mints a fresh Box token payload from the JWT config on startup, then passes it to `BoxMount` as `token`. This keeps the mount inline while matching the rclone mode that works reliably in non-interactive Docker mounts.
+- `BOX_TOKEN` is still supported as a manual override if you want to provide the JSON blob yourself.
+- `BOX_ACCESS_TOKEN` is still supported, but only as a compatibility fallback; the auto-minted `BOX_TOKEN` path is preferred.
+- If you use `BOX_SUB_TYPE=user`, also set `BOX_IMPERSONATE` to the Box user ID whose token should be minted.
+- Prompt history is stored in `BOX_PROMPT_HISTORY`.

@@ -1,2 +1,4 @@
 openai-agents[docker]
+PyJWT[crypto]>=2.8.0
+prompt_toolkit>=3.0.47
 python-dotenv>=1.0.1

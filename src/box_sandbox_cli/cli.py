@@ -24,6 +24,13 @@ from docker import from_env as docker_from_env
 from dotenv import load_dotenv
 import jwt
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.patch_stdout import patch_stdout
+
+from agents.stream_events import AgentUpdatedStreamEvent, RawResponsesStreamEvent, RunItemStreamEvent
 
 
 EXIT_COMMANDS = {"/exit", "/quit", "exit", "quit"}
@@ -49,6 +56,7 @@ class Settings:
     box_impersonate: str | None
     box_owned_by: str | None
     box_plugin_config_dir: Path
+    prompt_history_file: Path
     session_id: str
     session_db: Path
 
@@ -234,6 +242,11 @@ def load_settings() -> Settings:
         base_dir=project_root,
     )
     session_db.parent.mkdir(parents=True, exist_ok=True)
+    prompt_history_file = _resolve_path(
+        os.getenv("BOX_PROMPT_HISTORY", ".box-sandbox-cli/prompt_history.txt"),
+        base_dir=project_root,
+    )
+    prompt_history_file.parent.mkdir(parents=True, exist_ok=True)
 
     session_id = os.getenv("BOX_SESSION_ID", "box-sandbox-cli").strip() or "box-sandbox-cli"
     box_client_id = _require_env("BOX_CLIENT_ID")
@@ -282,6 +295,7 @@ def load_settings() -> Settings:
         box_impersonate=box_impersonate,
         box_owned_by=_optional_env("BOX_OWNED_BY"),
         box_plugin_config_dir=box_plugin_config_dir,
+        prompt_history_file=prompt_history_file,
         session_id=session_id,
         session_db=session_db,
     )
@@ -337,10 +351,62 @@ def _print_help() -> None:
     print("/exit or /quit ends the CLI and deletes the Docker sandbox.")
 
 
+def _print_stream_item(event: RunItemStreamEvent) -> None:
+    if event.name == "tool_called":
+        print("\n[tool called]", flush=True)
+    elif event.name == "tool_output":
+        output = getattr(event.item, "output", None)
+        print(f"\n[tool output: {output}]", flush=True)
+    elif event.name == "handoff_requested":
+        print("\n[handoff requested]", flush=True)
+    elif event.name == "handoff_occured":
+        print("\n[handoff completed]", flush=True)
+
+
+async def _stream_agent_reply(
+    agent: SandboxAgent,
+    prompt: str,
+    *,
+    chat_session: SQLiteSession,
+    run_config: RunConfig,
+) -> str:
+    result = Runner.run_streamed(
+        agent,
+        prompt,
+        session=chat_session,
+        run_config=run_config,
+    )
+    saw_text = False
+    print("assistant> ", end="", flush=True)
+    async for event in result.stream_events():
+        if isinstance(event, RawResponsesStreamEvent):
+            if isinstance(event.data, ResponseTextDeltaEvent):
+                print(event.data.delta, end="", flush=True)
+                saw_text = True
+        elif isinstance(event, RunItemStreamEvent):
+            _print_stream_item(event)
+        elif isinstance(event, AgentUpdatedStreamEvent):
+            print(f"\n[agent updated: {event.new_agent.name}]", flush=True)
+
+    if result.run_loop_exception:
+        raise result.run_loop_exception
+
+    final_output = result.final_output
+    if not saw_text and final_output is not None:
+        print(final_output, end="", flush=True)
+
+    print(flush=True)
+    return "" if final_output is None else str(final_output)
+
+
 async def run_cli() -> None:
     settings = load_settings()
     agent = build_agent(settings)
     chat_session = SQLiteSession(settings.session_id, str(settings.session_db))
+    prompt_session = PromptSession[str](
+        history=FileHistory(str(settings.prompt_history_file)),
+        auto_suggest=AutoSuggestFromHistory(),
+    )
 
     docker_client = DockerSandboxClient(docker_from_env())
     run_config: RunConfig | None = None
@@ -369,33 +435,36 @@ async def run_cli() -> None:
                 )
                 print()
 
-            while True:
-                try:
-                    prompt = await asyncio.to_thread(input, "user> ")
-                except EOFError:
-                    print()
-                    break
+            with patch_stdout():
+                while True:
+                    try:
+                        prompt = await prompt_session.prompt_async("user> ")
+                    except EOFError:
+                        print()
+                        break
+                    except KeyboardInterrupt:
+                        print()
+                        continue
 
-                prompt = prompt.strip()
-                if not prompt:
-                    continue
-                if prompt in EXIT_COMMANDS:
-                    break
-                if prompt == "/help":
-                    _print_help()
-                    continue
-                if prompt == "/clear":
-                    await chat_session.clear_session()
-                    print("assistant> Cleared conversation history.")
-                    continue
+                    prompt = prompt.strip()
+                    if not prompt:
+                        continue
+                    if prompt in EXIT_COMMANDS:
+                        break
+                    if prompt == "/help":
+                        _print_help()
+                        continue
+                    if prompt == "/clear":
+                        await chat_session.clear_session()
+                        print("assistant> Cleared conversation history.")
+                        continue
 
-                result = await Runner.run(
-                    agent,
-                    prompt,
-                    session=chat_session,
-                    run_config=run_config,
-                )
-                print(f"assistant> {result.final_output}")
+                    await _stream_agent_reply(
+                        agent,
+                        prompt,
+                        chat_session=chat_session,
+                        run_config=run_config,
+                    )
     finally:
         if sandbox is not None:
             await docker_client.delete(sandbox)

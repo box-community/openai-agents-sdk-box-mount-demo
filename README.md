@@ -5,6 +5,8 @@ Simple interactive Python CLI built on [`openai-agents`](https://pypi.org/projec
 - starts a Docker-backed `SandboxAgent`
 - mounts a Box folder read/write with `BoxMount`
 - keeps the same live sandbox session across multiple CLI prompts
+- uses `Prompt Toolkit` for the interactive prompt
+- streams assistant responses live as the `SandboxAgent` generates them
 
 ## What it expects
 
@@ -31,6 +33,7 @@ BOX_IMPERSONATE=
 BOX_OWNED_BY=
 BOX_PLUGIN_CONFIG_DIR=/var/lib/docker-plugins/rclone/config
 BOX_MOUNT_DIR=box
+BOX_PROMPT_HISTORY=.box-sandbox-cli/prompt_history.txt
 BOX_SESSION_ID=box-sandbox-cli
 BOX_SESSION_DB=.box-sandbox-cli/session.sqlite3
 ```
@@ -64,3 +67,4 @@ python -m box_sandbox_cli.cli
 - `BOX_TOKEN` is still supported as a manual override if you want to provide the JSON blob yourself.
 - `BOX_ACCESS_TOKEN` is still supported, but only as a compatibility fallback; the auto-minted `BOX_TOKEN` path is preferred.
 - If you use `BOX_SUB_TYPE=user`, also set `BOX_IMPERSONATE` to the Box user ID whose token should be minted.
+- Prompt history is stored in `BOX_PROMPT_HISTORY`.
