@@ -1,0 +1,4 @@
+version: 1
+display_name: Box Team Management
+short_description: Placeholder scaffold for Box team management workflows.
+default_prompt: Use the box-team-management skill for Box team management tasks in this project.

@@ -16,9 +16,9 @@ from urllib.request import Request, urlopen
 from agents import Runner, SQLiteSession
 from agents.run import RunConfig
 from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
-from agents.sandbox.capabilities import Filesystem, Shell
+from agents.sandbox.capabilities import Filesystem, Shell, Skills
 from agents.sandbox.config import DEFAULT_PYTHON_SANDBOX_IMAGE
-from agents.sandbox.entries import BoxMount, DockerVolumeMountStrategy
+from agents.sandbox.entries import BoxMount, DockerVolumeMountStrategy, LocalDir
 from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
 from docker import from_env as docker_from_env
 from dotenv import load_dotenv
@@ -332,7 +332,11 @@ def build_agent(settings: Settings) -> SandboxAgent:
             "When you change files, mention the exact paths you touched."
         ),
         default_manifest=build_manifest(settings),
-        capabilities=[Filesystem(), Shell()],
+        capabilities=[
+            Filesystem(),
+            Shell(),
+            Skills(from_=LocalDir(src="skills")),
+        ],
     )
 
 
