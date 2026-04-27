@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
 import re
 import secrets
+import sys
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -228,6 +231,24 @@ def _coerce_box_token(
     return None, json.dumps(minted_token_payload, separators=(",", ":"))
 
 
+def _token_access_token(
+    *,
+    box_access_token: str | None,
+    box_token: str | None,
+) -> str:
+    if box_access_token:
+        return box_access_token
+    if box_token:
+        try:
+            payload = json.loads(box_token)
+        except json.JSONDecodeError as exc:
+            raise ValueError("BOX_TOKEN must be valid JSON.") from exc
+        access_token = payload.get("access_token")
+        if isinstance(access_token, str) and access_token:
+            return access_token
+    raise ValueError("No usable Box access token is available.")
+
+
 def load_settings() -> Settings:
     project_root = Path.cwd()
     env_file = _resolve_env_file(project_root)
@@ -345,12 +366,13 @@ def _print_banner(settings: Settings) -> None:
     print(f"Model: {settings.openai_model}")
     print(f"Sandbox image: {settings.sandbox_image}")
     print(f"Box mount: /workspace/{settings.box_mount_dir}")
-    print("Commands: /exit, /quit, /clear, /help")
+    print("Commands: /exit, /quit, /clear, /help, /events")
     print()
 
 
 def _print_help() -> None:
     print("Enter a normal prompt to talk to the SandboxAgent.")
+    print("/events prints enterprise Box events from the last 24 hours.")
     print("/clear clears saved conversation history but keeps the live sandbox session running.")
     print("/exit or /quit ends the CLI and deletes the Docker sandbox.")
 
@@ -458,6 +480,9 @@ async def run_cli() -> None:
                     if prompt == "/help":
                         _print_help()
                         continue
+                    if prompt == "/events":
+                        _print_events(settings)
+                        continue
                     if prompt == "/clear":
                         await chat_session.clear_session()
                         print("assistant> Cleared conversation history.")
@@ -474,9 +499,141 @@ async def run_cli() -> None:
             await docker_client.delete(sandbox)
 
 
+def _format_box_time(value: str | None) -> str:
+    if not value:
+        return "-"
+    return value
+
+
+def _format_event_actor(entry: dict[str, Any]) -> str:
+    created_by = entry.get("created_by")
+    if isinstance(created_by, dict):
+        name = created_by.get("name")
+        login = created_by.get("login")
+        if isinstance(name, str) and name:
+            if isinstance(login, str) and login:
+                return f"{name} <{login}>"
+            return name
+    return "-"
+
+
+def _format_event_source(entry: dict[str, Any]) -> str:
+    source = entry.get("source")
+    if not isinstance(source, dict):
+        return "-"
+    source_type = source.get("type")
+    source_name = source.get("name")
+    parts: list[str] = []
+    if isinstance(source_type, str) and source_type:
+        parts.append(source_type)
+    if isinstance(source_name, str) and source_name:
+        parts.append(source_name)
+    return ": ".join(parts) if parts else "-"
+
+
+def _get_json(url: str, *, access_token: str) -> dict[str, Any]:
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Box API request failed: HTTP {exc.code}: {details}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Box API request failed: {exc.reason}") from exc
+
+
+def _fetch_enterprise_events(settings: Settings, *, hours: int = 24) -> list[dict[str, Any]]:
+    access_token = _token_access_token(
+        box_access_token=settings.box_access_token,
+        box_token=settings.box_token,
+    )
+    created_before = datetime.now(UTC)
+    created_after = created_before - timedelta(hours=hours)
+
+    params = {
+        "stream_type": "admin_logs",
+        "stream_position": "0",
+        "limit": "500",
+        "created_after": created_after.isoformat().replace("+00:00", "Z"),
+        "created_before": created_before.isoformat().replace("+00:00", "Z"),
+    }
+
+    events: list[dict[str, Any]] = []
+    next_stream_position: str | None = None
+
+    while True:
+        if next_stream_position is not None:
+            params["stream_position"] = next_stream_position
+
+        payload = _get_json(
+            f"https://api.box.com/2.0/events?{urlencode(params)}",
+            access_token=access_token,
+        )
+        entries = payload.get("entries", [])
+        if isinstance(entries, list):
+            events.extend(entry for entry in entries if isinstance(entry, dict))
+
+        new_position = payload.get("next_stream_position")
+        chunk_size = payload.get("chunk_size")
+        if not isinstance(new_position, str) or not new_position or new_position == next_stream_position:
+            break
+        if not isinstance(chunk_size, int) or chunk_size == 0:
+            break
+        next_stream_position = new_position
+
+    return events
+
+
+def _print_events(settings: Settings) -> None:
+    events = _fetch_enterprise_events(settings)
+    print(f"Enterprise events from the last 24 hours: {len(events)}")
+    print()
+
+    if not events:
+        print("No events found.")
+        return
+
+    for entry in events:
+        created_at = _format_box_time(entry.get("created_at"))
+        event_type = entry.get("event_type")
+        event_id = entry.get("event_id")
+        actor = _format_event_actor(entry)
+        source = _format_event_source(entry)
+        print(f"{created_at}  {event_type or '-'}")
+        print(f"  actor:  {actor}")
+        print(f"  source: {source}")
+        if isinstance(event_id, str) and event_id:
+            print(f"  id:     {event_id}")
+        print()
+
+
+def run_events_command() -> None:
+    settings = load_settings()
+    _print_events(settings)
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="box-sandbox-cli")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("events", help="List enterprise Box events from the last 24 hours.")
+    return parser.parse_args(argv)
+
+
 def main() -> None:
     try:
-        asyncio.run(run_cli())
+        args = _parse_args(sys.argv[1:])
+        if args.command == "events":
+            run_events_command()
+        else:
+            asyncio.run(run_cli())
     except KeyboardInterrupt:
         print("\nExiting.")
     except Exception as exc:

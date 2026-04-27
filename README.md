@@ -62,6 +62,12 @@ uv pip install -e .
 box-sandbox-cli
 ```
 
+List enterprise Box events from the last 24 hours:
+
+```bash
+box-sandbox-cli events
+```
+
 Some simple prompts:
 
 `Show me a status report for the team`
@@ -76,6 +82,7 @@ Some simple prompts:
 - This CLI uses `DockerVolumeMountStrategy(driver="rclone")`, which means Docker needs to be running and the `rclone` Docker volume plugin must be available on the machine.
 - The CLI stages `BOX_CONFIG_FILE` into the Docker plugin config directory and passes that staged file to `BoxMount` as `box_config_file`.
 - The CLI mints a fresh Box token payload from the JWT config on startup, then passes it to `BoxMount` as `token`. This keeps the mount inline while matching the rclone mode that works reliably in non-interactive Docker mounts.
+- The `events` command calls `GET /events` with `stream_type=admin_logs` and a 24-hour window. Per Box's API docs, this requires admin privileges and the app scope `manage enterprise properties`.
 - `BOX_TOKEN` is still supported as a manual override if you want to provide the JSON blob yourself.
 - `BOX_ACCESS_TOKEN` is still supported, but only as a compatibility fallback; the auto-minted `BOX_TOKEN` path is preferred.
 - If you use `BOX_SUB_TYPE=user`, also set `BOX_IMPERSONATE` to the Box user ID whose token should be minted.
