@@ -44,7 +44,7 @@ class Settings:
     box_root_folder_id: str
     box_mount_subpath: str | None
     box_mount_dir: str
-    box_access_token: str
+    box_access_token: str | None
     box_token: str | None
     box_impersonate: str | None
     box_owned_by: str | None
@@ -101,14 +101,14 @@ def _stage_box_config_for_plugin(
     return f"/data/config/{staged_name}"
 
 
-def _mint_box_access_token(
+def _mint_box_token_payload(
     *,
     box_config: dict[str, Any],
     client_id: str,
     client_secret: str,
     box_sub_type: str,
     impersonate: str | None,
-) -> str:
+) -> dict[str, Any]:
     app_settings = box_config["boxAppSettings"]
     app_auth = app_settings["appAuth"]
 
@@ -164,7 +164,60 @@ def _mint_box_access_token(
     access_token = payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
         raise RuntimeError("Box token exchange succeeded but no access_token was returned.")
-    return access_token
+
+    expires_in = payload.get("expires_in")
+    if isinstance(expires_in, (int, float)):
+        expiry_ts = time.time() + float(expires_in)
+    else:
+        expiry_ts = time.time() + 3600
+
+    token_payload: dict[str, Any] = {
+        "access_token": access_token,
+        "token_type": payload.get("token_type", "bearer"),
+        "expiry": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expiry_ts)),
+    }
+    refresh_token = payload.get("refresh_token")
+    if isinstance(refresh_token, str) and refresh_token:
+        token_payload["refresh_token"] = refresh_token
+    return token_payload
+
+
+def _coerce_box_token(
+    *,
+    env_box_token: str | None,
+    env_box_access_token: str | None,
+    minted_token_payload: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    if env_box_token:
+        return None, env_box_token
+
+    if env_box_access_token:
+        try:
+            parsed = json.loads(env_box_access_token)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            access_token = parsed.get("access_token")
+            if isinstance(access_token, str) and access_token:
+                token_payload = {
+                    "access_token": access_token,
+                    "token_type": parsed.get("token_type", "bearer"),
+                    "expiry": parsed.get(
+                        "expiry",
+                        time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600)
+                        ),
+                    ),
+                }
+                refresh_token = parsed.get("refresh_token")
+                if isinstance(refresh_token, str) and refresh_token:
+                    token_payload["refresh_token"] = refresh_token
+                return None, json.dumps(token_payload, separators=(",", ":"))
+
+        return env_box_access_token, None
+
+    return None, json.dumps(minted_token_payload, separators=(",", ":"))
 
 
 def load_settings() -> Settings:
@@ -197,12 +250,17 @@ def load_settings() -> Settings:
         box_config_file=box_config_file,
         plugin_config_dir=box_plugin_config_dir,
     )
-    box_access_token = _optional_env("BOX_ACCESS_TOKEN") or _mint_box_access_token(
+    minted_token_payload = _mint_box_token_payload(
         box_config=box_config,
         client_id=box_client_id,
         client_secret=box_client_secret,
         box_sub_type=box_sub_type,
         impersonate=box_impersonate,
+    )
+    box_access_token, box_token = _coerce_box_token(
+        env_box_token=_optional_env("BOX_TOKEN"),
+        env_box_access_token=_optional_env("BOX_ACCESS_TOKEN"),
+        minted_token_payload=minted_token_payload,
     )
 
     return Settings(
@@ -220,7 +278,7 @@ def load_settings() -> Settings:
         box_mount_subpath=_optional_env("BOX_MOUNT_SUBPATH"),
         box_mount_dir=os.getenv("BOX_MOUNT_DIR", "box").strip() or "box",
         box_access_token=box_access_token,
-        box_token=_optional_env("BOX_TOKEN"),
+        box_token=box_token,
         box_impersonate=box_impersonate,
         box_owned_by=_optional_env("BOX_OWNED_BY"),
         box_plugin_config_dir=box_plugin_config_dir,
@@ -304,10 +362,10 @@ async def run_cli() -> None:
             run_config = RunConfig(sandbox=SandboxRunConfig(session=sandbox))
             _print_banner(settings)
 
-            if settings.box_token:
+            if settings.box_access_token:
                 print(
-                    "Warning: BOX_TOKEN is set. For Box JWT flows, the CLI now auto-mints "
-                    "BOX_ACCESS_TOKEN from BOX_CONFIG_FILE and usually does not need BOX_TOKEN."
+                    "Warning: using BOX_ACCESS_TOKEN directly. For Box JWT flows, the CLI now "
+                    "prefers an auto-minted BOX_TOKEN JSON blob from BOX_CONFIG_FILE."
                 )
                 print()
 
