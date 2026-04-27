@@ -13,7 +13,7 @@ Simple interactive Python CLI that uses a agent to manage team and task informat
 
 ## Getting started
 
-- Signup for a free [Box developer account]()
+- Signup for a free [Box developer account](https://account.box.com/signup/developer)
 - Create a new Platform App of type Server Auth - JWT
 - Generate a public/private key pair for the JWT and download the JSON
 - `git clone git@github.com:box-community/openai-agents-sdk-box-mount-demo.git`
