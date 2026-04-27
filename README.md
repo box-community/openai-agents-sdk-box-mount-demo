@@ -1,14 +1,24 @@
-# Box Sandbox CLI
+# OpenAI Agents SDK Box Mount demo
 
-Simple interactive Python CLI built on [`openai-agents`](https://pypi.org/project/openai-agents/) that:
+Simple interactive Python CLI that uses a agent to manage team and task information that is stored in Box.
 
+
+- built on [`OpenAI Agents SDK`](https://pypi.org/project/openai-agents/)
 - starts a Docker-backed `SandboxAgent`
 - mounts a Box folder read/write with `BoxMount`
 - keeps the same live sandbox session across multiple CLI prompts
 - uses `Prompt Toolkit` for the interactive prompt
 - streams assistant responses live as the `SandboxAgent` generates them
 
-## What it expects
+
+## Getting started
+
+- Signup for a free [Box developer account]()
+- Create a new Platform App of type Server Auth - JWT
+- Generate a public/private key pair for the JWT and download the JSON
+- `git clone git@github.com:box-community/openai-agents-sdk-box-mount-demo.git`
+
+## Setup
 
 Create a `.env.local` file in this project with:
 
@@ -16,8 +26,8 @@ Create a `.env.local` file in this project with:
 OPENAI_API_KEY=sk-...
 BOX_CLIENT_ID=...
 BOX_CLIENT_SECRET=...
-BOX_CONFIG_FILE=/absolute/path/to/box-config.json
-BOX_SUB_TYPE=user
+BOX_CONFIG_FILE=./box-config.json
+BOX_SUB_TYPE=enterprise
 BOX_ROOT_FOLDER_ID=123456789
 ```
 
@@ -52,11 +62,13 @@ uv pip install -e .
 box-sandbox-cli
 ```
 
-Or:
+Some simple prompts:
 
-```bash
-python -m box_sandbox_cli.cli
-```
+`Show me a status report for the team`
+
+`Let's add a new team member`
+
+`Mark task X as complete`
 
 ## Notes
 
