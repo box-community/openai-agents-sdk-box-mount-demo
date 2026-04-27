@@ -29,6 +29,7 @@ BOX_ACCESS_TOKEN=
 BOX_TOKEN=
 BOX_IMPERSONATE=
 BOX_OWNED_BY=
+BOX_PLUGIN_CONFIG_DIR=/var/lib/docker-plugins/rclone/config
 BOX_MOUNT_DIR=box
 BOX_SESSION_ID=box-sandbox-cli
 BOX_SESSION_DB=.box-sandbox-cli/session.sqlite3
@@ -58,5 +59,7 @@ python -m box_sandbox_cli.cli
 
 - The Box mount is created with `BoxMount(..., read_only=False)` so the agent can write back to Box.
 - This CLI uses `DockerVolumeMountStrategy(driver="rclone")`, which means Docker needs to be running and the `rclone` Docker volume plugin must be available on the machine.
-- The CLI reads `BOX_CONFIG_FILE`, inlines its JSON into `config_credentials`, and passes that to `BoxMount`. That avoids relying on the Docker volume plugin being able to see an arbitrary host path.
-- The current SDK docs note that non-interactive Box mounts may require a minted `token` or `access_token`. The CLI accepts optional `BOX_TOKEN` and `BOX_ACCESS_TOKEN` overrides for that reason.
+- The CLI stages `BOX_CONFIG_FILE` into the Docker plugin config directory and passes that staged file to `BoxMount` as `box_config_file`.
+- The CLI also mints a fresh Box access token from the JWT config on startup, then passes it to `BoxMount` as `access_token`. This keeps the mount inline while avoiding the Docker plugin's non-interactive token bootstrap problem.
+- `BOX_ACCESS_TOKEN` is still supported as an override if you want to provide one manually.
+- If you use `BOX_SUB_TYPE=user`, also set `BOX_IMPERSONATE` to the Box user ID whose token should be minted.

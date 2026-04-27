@@ -3,8 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from agents import Runner, SQLiteSession
 from agents.run import RunConfig
@@ -15,6 +22,8 @@ from agents.sandbox.entries import BoxMount, DockerVolumeMountStrategy
 from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
 from docker import from_env as docker_from_env
 from dotenv import load_dotenv
+import jwt
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 
 EXIT_COMMANDS = {"/exit", "/quit", "exit", "quit"}
@@ -30,15 +39,16 @@ class Settings:
     box_client_id: str
     box_client_secret: str
     box_config_file: Path
-    box_config_credentials: str
+    box_mount_config_file: str
     box_sub_type: str
     box_root_folder_id: str
     box_mount_subpath: str | None
     box_mount_dir: str
-    box_access_token: str | None
+    box_access_token: str
     box_token: str | None
     box_impersonate: str | None
     box_owned_by: str | None
+    box_plugin_config_dir: Path
     session_id: str
     session_db: Path
 
@@ -72,6 +82,91 @@ def _resolve_path(raw_path: str, *, base_dir: Path) -> Path:
     return candidate
 
 
+def _sanitize_filename(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-")
+    return sanitized or "box-sandbox-cli"
+
+
+def _stage_box_config_for_plugin(
+    *,
+    session_id: str,
+    box_config_file: Path,
+    plugin_config_dir: Path,
+) -> str:
+    plugin_config_dir.mkdir(parents=True, exist_ok=True)
+    staged_name = f"{_sanitize_filename(session_id)}-box-config.json"
+    staged_path = plugin_config_dir / staged_name
+    staged_path.write_text(box_config_file.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(staged_path, 0o600)
+    return f"/data/config/{staged_name}"
+
+
+def _mint_box_access_token(
+    *,
+    box_config: dict[str, Any],
+    client_id: str,
+    client_secret: str,
+    box_sub_type: str,
+    impersonate: str | None,
+) -> str:
+    app_settings = box_config["boxAppSettings"]
+    app_auth = app_settings["appAuth"]
+
+    if box_sub_type == "enterprise":
+        subject = box_config["enterpriseID"]
+    else:
+        if not impersonate:
+            raise ValueError(
+                "BOX_SUB_TYPE=user requires BOX_IMPERSONATE so a user access token can be minted."
+            )
+        subject = impersonate
+
+    private_key = load_pem_private_key(
+        app_auth["privateKey"].encode("utf-8"),
+        password=app_auth["passphrase"].encode("utf-8"),
+    )
+    assertion = jwt.encode(
+        {
+            "iss": client_id,
+            "sub": subject,
+            "box_sub_type": box_sub_type,
+            "aud": "https://api.box.com/oauth2/token",
+            "jti": secrets.token_urlsafe(32),
+            "exp": int(time.time()) + 45,
+        },
+        private_key,
+        algorithm="RS512",
+        headers={"kid": app_auth["publicKeyID"]},
+    )
+
+    request = Request(
+        "https://api.box.com/oauth2/token",
+        data=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": assertion,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Box token exchange failed: HTTP {exc.code}: {details}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Box token exchange failed: {exc.reason}") from exc
+
+    access_token = payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise RuntimeError("Box token exchange succeeded but no access_token was returned.")
+    return access_token
+
+
 def load_settings() -> Settings:
     project_root = Path.cwd()
     env_file = _resolve_env_file(project_root)
@@ -81,15 +176,34 @@ def load_settings() -> Settings:
     if not box_config_file.is_file():
         raise FileNotFoundError(f"BOX_CONFIG_FILE does not exist: {box_config_file}")
 
-    # Inline the JSON credentials so the Docker rclone volume driver does not need direct
-    # filesystem access to the host-side config file path.
-    box_config_credentials = json.dumps(json.loads(box_config_file.read_text(encoding="utf-8")))
-
     session_db = _resolve_path(
         os.getenv("BOX_SESSION_DB", ".box-sandbox-cli/session.sqlite3"),
         base_dir=project_root,
     )
     session_db.parent.mkdir(parents=True, exist_ok=True)
+
+    session_id = os.getenv("BOX_SESSION_ID", "box-sandbox-cli").strip() or "box-sandbox-cli"
+    box_client_id = _require_env("BOX_CLIENT_ID")
+    box_client_secret = _require_env("BOX_CLIENT_SECRET")
+    box_sub_type = os.getenv("BOX_SUB_TYPE", "user").strip() or "user"
+    box_impersonate = _optional_env("BOX_IMPERSONATE")
+    box_plugin_config_dir = Path(
+        os.getenv("BOX_PLUGIN_CONFIG_DIR", "/var/lib/docker-plugins/rclone/config")
+    )
+
+    box_config = json.loads(box_config_file.read_text(encoding="utf-8"))
+    box_mount_config_file = _stage_box_config_for_plugin(
+        session_id=session_id,
+        box_config_file=box_config_file,
+        plugin_config_dir=box_plugin_config_dir,
+    )
+    box_access_token = _optional_env("BOX_ACCESS_TOKEN") or _mint_box_access_token(
+        box_config=box_config,
+        client_id=box_client_id,
+        client_secret=box_client_secret,
+        box_sub_type=box_sub_type,
+        impersonate=box_impersonate,
+    )
 
     return Settings(
         env_file=env_file,
@@ -97,19 +211,20 @@ def load_settings() -> Settings:
         openai_api_key=_require_env("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.5").strip(),
         sandbox_image=os.getenv("SANDBOX_IMAGE", DEFAULT_PYTHON_SANDBOX_IMAGE).strip(),
-        box_client_id=_require_env("BOX_CLIENT_ID"),
-        box_client_secret=_require_env("BOX_CLIENT_SECRET"),
+        box_client_id=box_client_id,
+        box_client_secret=box_client_secret,
         box_config_file=box_config_file,
-        box_config_credentials=box_config_credentials,
-        box_sub_type=os.getenv("BOX_SUB_TYPE", "user").strip() or "user",
+        box_mount_config_file=box_mount_config_file,
+        box_sub_type=box_sub_type,
         box_root_folder_id=_require_env("BOX_ROOT_FOLDER_ID"),
         box_mount_subpath=_optional_env("BOX_MOUNT_SUBPATH"),
         box_mount_dir=os.getenv("BOX_MOUNT_DIR", "box").strip() or "box",
-        box_access_token=_optional_env("BOX_ACCESS_TOKEN"),
+        box_access_token=box_access_token,
         box_token=_optional_env("BOX_TOKEN"),
-        box_impersonate=_optional_env("BOX_IMPERSONATE"),
+        box_impersonate=box_impersonate,
         box_owned_by=_optional_env("BOX_OWNED_BY"),
-        session_id=os.getenv("BOX_SESSION_ID", "box-sandbox-cli").strip() or "box-sandbox-cli",
+        box_plugin_config_dir=box_plugin_config_dir,
+        session_id=session_id,
         session_db=session_db,
     )
 
@@ -121,7 +236,7 @@ def build_manifest(settings: Settings) -> Manifest:
         client_secret=settings.box_client_secret,
         access_token=settings.box_access_token,
         token=settings.box_token,
-        config_credentials=settings.box_config_credentials,
+        box_config_file=settings.box_mount_config_file,
         box_sub_type=settings.box_sub_type,
         root_folder_id=settings.box_root_folder_id,
         impersonate=settings.box_impersonate,
@@ -189,10 +304,10 @@ async def run_cli() -> None:
             run_config = RunConfig(sandbox=SandboxRunConfig(session=sandbox))
             _print_banner(settings)
 
-            if not settings.box_access_token and not settings.box_token:
+            if settings.box_token:
                 print(
-                    "Warning: BOX_ACCESS_TOKEN / BOX_TOKEN are not set. "
-                    "Current BoxMount docs note non-interactive mounts may require one."
+                    "Warning: BOX_TOKEN is set. For Box JWT flows, the CLI now auto-mints "
+                    "BOX_ACCESS_TOKEN from BOX_CONFIG_FILE and usually does not need BOX_TOKEN."
                 )
                 print()
 
