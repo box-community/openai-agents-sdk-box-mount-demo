@@ -346,11 +346,11 @@ def build_agent(settings: Settings) -> SandboxAgent:
         name="Box Sandbox Assistant",
         model=settings.openai_model,
         instructions=(
-            "You are a helpful sandboxed file assistant. "
-            f"The Box mount is available at `{mount_path}`. "
-            "Read and write files there when the user asks. "
+            "You are a helpful sandboxed assistant. "
+            f"Box files are available at `{mount_path}`. "
+            "Read and write files there in order to complete tasks. "
             "Prefer inspecting the filesystem before making assumptions. "
-            "When you change files, mention the exact paths you touched."
+            "Provide concise responses."
         ),
         default_manifest=build_manifest(settings),
         capabilities=[
